@@ -10,7 +10,7 @@ def make_test_call():
     
     # Get credentials from environment variables
     account_sid = 'ACfca506577596fcae1c5a38e9475b12c2'
-    auth_token = '8cc079c027506ec5e755e1015169eb58'
+    auth_token = 'aa471151a2967ca2c09cce3c8ad0ae67'
     
     if not account_sid or not auth_token:
         print("❌ Error: Twilio credentials not found in environment variables")

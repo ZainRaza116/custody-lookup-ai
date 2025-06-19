@@ -75,11 +75,93 @@ class CustodyLookupWebDriver:
             logger.error(f"Failed to initialize WebDriver: {e}")
             return False
     
+    def validate_and_format_date(self, date_input: str) -> tuple:
+        """
+        Validate and format date input to MM/DD/YYYY format
+        Returns tuple: (formatted_date, is_valid)
+        """
+        if not date_input or date_input == "Not provided":
+            return None, False
+        
+        # Clean the input
+        date_input = date_input.strip().replace('-', '/').replace('.', '/')
+        
+        # Common date patterns to match
+        patterns = [
+            # MM/DD/YYYY or M/D/YYYY
+            r'^(\d{1,2})/(\d{1,2})/(\d{4})$',
+            # MM-DD-YYYY or M-D-YYYY
+            r'^(\d{1,2})-(\d{1,2})-(\d{4})$',
+            # YYYY/MM/DD
+            r'^(\d{4})/(\d{1,2})/(\d{1,2})$',
+            # YYYY-MM-DD
+            r'^(\d{4})-(\d{1,2})-(\d{1,2})$'
+        ]
+        
+        for i, pattern in enumerate(patterns):
+            match = re.match(pattern, date_input)
+            if match:
+                if i < 2:  # MM/DD/YYYY format
+                    month, day, year = match.groups()
+                else:  # YYYY/MM/DD format
+                    year, month, day = match.groups()
+                
+                try:
+                    # Validate the date
+                    datetime(int(year), int(month), int(day))
+                    
+                    # Format to MM/DD/YYYY
+                    formatted_date = f"{int(month):02d}/{int(day):02d}/{year}"
+                    return formatted_date, True
+                    
+                except ValueError:
+                    continue
+        
+        return None, False
+    
+    def parse_spoken_date(self, spoken_date: str) -> str:
+        """
+        Convert spoken date to numerical format
+        """
+        # Convert spoken numbers to digits
+        number_words = {
+            'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+            'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+            'ten': '10', 'eleven': '11', 'twelve': '12', 'thirteen': '13',
+            'fourteen': '14', 'fifteen': '15', 'sixteen': '16', 'seventeen': '17',
+            'eighteen': '18', 'nineteen': '19', 'twenty': '20', 'thirty': '30'
+        }
+        
+        spoken_date = spoken_date.lower()
+        
+        # Replace slash words
+        spoken_date = spoken_date.replace('slash', '/').replace('dash', '-')
+        
+        # Replace number words with digits
+        for word, digit in number_words.items():
+            spoken_date = spoken_date.replace(word, digit)
+        
+        # Handle twenty-something numbers
+        spoken_date = re.sub(r'twenty[\s-]?(\w+)', lambda m: '2' + number_words.get(m.group(1), m.group(1)), spoken_date)
+        spoken_date = re.sub(r'thirty[\s-]?(\w+)', lambda m: '3' + number_words.get(m.group(1), m.group(1)), spoken_date)
+        
+        return spoken_date
+    
     def parse_date_of_birth(self, date_str: str) -> Optional[str]:
         """Parse various date formats into MM/DD/YYYY format required by the form"""
         if not date_str or date_str == "Not provided":
             return None
         
+        # First try to parse spoken date
+        date_str = self.parse_spoken_date(date_str)
+        
+        # Then validate and format
+        formatted_date, is_valid = self.validate_and_format_date(date_str)
+        
+        if is_valid:
+            return formatted_date
+        
+        # If basic validation fails, try the original parsing logic
         date_str = date_str.strip().lower()
         
         # Remove common words
@@ -141,7 +223,7 @@ class CustodyLookupWebDriver:
                 pass
         
         logger.warning(f"Could not parse date: {date_str}")
-        return None
+        return ""  # Return empty string instead of None for form compatibility
     
     def navigate_to_custody_page(self) -> bool:
         """Navigate to the custody lookup page"""
@@ -188,14 +270,14 @@ class CustodyLookupWebDriver:
                 first_name_field.send_keys(first_name.strip().title())
                 logger.info(f"✅ Filled first name: {first_name}")
             
-            # Fill Date of Birth (optional)
-            if formatted_dob:
+            # Fill Date of Birth (optional) - handle None case
+            if formatted_dob and formatted_dob != "":
                 dob_field = self.driver.find_element(By.CSS_SELECTOR, self.selectors['date_of_birth'])
                 dob_field.clear()
                 dob_field.send_keys(formatted_dob)
                 logger.info(f"✅ Filled date of birth: {formatted_dob}")
             else:
-                logger.warning(f"⚠️ Could not format date: '{date_of_birth}'")
+                logger.warning(f"⚠️ Skipping date field - could not format: '{date_of_birth}'")
             
             # Select Gender
             if gender in ["M", "F", ""]:
@@ -219,6 +301,287 @@ class CustodyLookupWebDriver:
             logger.error(f"❌ Error filling form: {e}")
             return False
     
+    def submit_search_and_process_results(self) -> Dict[str, Any]:
+        """MODULE 4: Submit search and process results from table"""
+        try:
+            # Click the search button
+            search_button = self.driver.find_element(By.CSS_SELECTOR, self.selectors['search_button'])
+            search_button.click()
+            
+            # Wait for page to load
+            time.sleep(3)
+            
+            # Check for results table
+            return self.check_and_process_table()
+            
+        except Exception as e:
+            logger.error(f"Error during search submission: {e}")
+            return {
+                'success': False,
+                'error_message': "Sorry, there was an error processing your request. Please try again later.",
+                'inmates_found': 0,
+                'inmates': []
+            }
+    
+    def check_and_process_table(self) -> Dict[str, Any]:
+        """Check for results table and process the information"""
+        try:
+            # Wait longer for potential table to load
+            WebDriverWait(self.driver, 15).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+            )
+            
+            # Give extra time for dynamic content
+            time.sleep(5)
+            
+            # Look for common table selectors
+            table_selectors = [
+                'table',
+                '.results-table',
+                '#results-table',
+                'table[class*="result"]',
+                'table[id*="result"]',
+                '.custody-results',
+                '#custody-results',
+                'table[class*="data"]',
+                'table[id*="data"]'
+            ]
+            
+            table_found = False
+            table_data = []
+            
+            logger.info("Searching for result tables...")
+            
+            for selector in table_selectors:
+                try:
+                    tables = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    logger.info(f"Found {len(tables)} tables with selector '{selector}'")
+                    
+                    for i, table in enumerate(tables):
+                        # Check if table has content (rows with data)
+                        rows = table.find_elements(By.TAG_NAME, 'tr')
+                        logger.info(f"Table {i+1}: {len(rows)} rows found")
+                        
+                        if len(rows) > 1:  # More than just header row
+                            table_found = True
+                            table_data = self.extract_table_data(table)
+                            logger.info(f"✅ Table data extracted: {len(table_data)} records")
+                            break
+                    
+                    if table_found:
+                        break
+                        
+                except NoSuchElementException:
+                    continue
+            
+            # If no structured table found, try to find any results text
+            if not table_found:
+                logger.info("No structured table found, checking for any results text...")
+                page_text = self.driver.page_source.lower()
+                
+                # Check for "no results" messages
+                if any(phrase in page_text for phrase in ['no records found', 'no results', 'no inmates found', 'no matches']):
+                    logger.info("Found 'no results' message")
+                    return {
+                        'success': True,
+                        'inmates_found': 0,
+                        'inmates': [],
+                        'voice_message': "Sorry, no results found for the provided information."
+                    }
+                
+                # Look for any data that might be results
+                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+                
+                # Look for divs or other elements that might contain results
+                potential_results = soup.find_all(['div', 'span', 'p'], string=re.compile(r'booking|inmate|custody|arrest', re.I))
+                
+                if potential_results:
+                    logger.info(f"Found {len(potential_results)} potential result elements")
+                    # Create a simple result from found text
+                    result_text = ' '.join([elem.get_text(strip=True) for elem in potential_results[:3]])  # First 3 elements
+                    if result_text:
+                        return {
+                            'success': True,
+                            'inmates_found': 1,
+                            'inmates': [{'info': result_text}],
+                            'voice_message': f"I found custody information: {result_text}"
+                        }
+            
+            if table_found and table_data:
+                return {
+                    'success': True,
+                    'inmates_found': len(table_data),
+                    'inmates': table_data,
+                    'voice_message': self.format_table_data_for_voice(table_data)
+                }
+            else:
+                logger.info("No results found in any format")
+                return {
+                    'success': True,
+                    'inmates_found': 0,
+                    'inmates': [],
+                    'voice_message': "Sorry, no results found for the provided information."
+                }
+                
+        except TimeoutException:
+            logger.warning("Timeout waiting for page to load completely")
+            return {
+                'success': True,
+                'inmates_found': 0,
+                'inmates': [],
+                'voice_message': "Sorry, no results found for the provided information."
+            }
+        except Exception as e:
+            logger.error(f"Error checking for table: {e}")
+            return {
+                'success': False,
+                'error_message': "Sorry, there was an error retrieving the information. Please try again later.",
+                'inmates_found': 0,
+                'inmates': []
+            }
+    
+    def extract_table_data(self, table) -> list:
+        """Extract relevant data from the custody results table"""
+        data = []
+        
+        try:
+            rows = table.find_elements(By.TAG_NAME, 'tr')
+            logger.info(f"Processing table with {len(rows)} total rows")
+            
+            # Get headers
+            headers = []
+            if rows:
+                header_cells = rows[0].find_elements(By.TAG_NAME, 'th')
+                if not header_cells:  # Try td if no th
+                    header_cells = rows[0].find_elements(By.TAG_NAME, 'td')
+                
+                headers = [cell.text.strip() for cell in header_cells if cell.text.strip()]
+                logger.info(f"Found headers: {headers}")
+            
+            # Get data rows
+            data_row_count = 0
+            for i, row in enumerate(rows[1:], 1):  # Skip header row
+                cells = row.find_elements(By.TAG_NAME, 'td')
+                if cells:
+                    row_data = {}
+                    cell_values = []
+                    
+                    for j, cell in enumerate(cells):
+                        cell_text = cell.text.strip()
+                        if cell_text:  # Only add non-empty cells
+                            header = headers[j] if j < len(headers) else f"Column_{j+1}"
+                            row_data[header] = cell_text
+                            cell_values.append(cell_text)
+                    
+                    logger.info(f"Row {i} data: {cell_values}")
+                    
+                    # Only add rows that have meaningful data (not just empty or header-like content)
+                    if any(row_data.values()) and len([v for v in row_data.values() if v]) > 1:
+                        data.append(row_data)
+                        data_row_count += 1
+                        logger.info(f"✅ Added data row {data_row_count}: {row_data}")
+                    else:
+                        logger.info(f"⚠️ Skipped empty/invalid row {i}")
+            
+            logger.info(f"Final extraction result: {len(data)} valid data rows")
+            
+        except Exception as e:
+            logger.error(f"Error extracting table data: {e}")
+        
+        return data
+    
+    def format_table_data_for_voice(self, table_data: list) -> str:
+        """Convert table data to spoken information"""
+        if not table_data:
+            return "Sorry, no custody information was found."
+        
+        try:
+            # Start with confirmation
+            if len(table_data) == 1:
+                voice_message = "I found one custody record. Here are the details: "
+            else:
+                voice_message = f"I found {len(table_data)} custody records. Here are the details: "
+            
+            for i, record in enumerate(table_data):
+                if len(table_data) > 1:
+                    voice_message += f"Record {i+1}: "
+                
+                # Log what we're processing
+                logger.info(f"Processing record {i+1}: {record}")
+                
+                # Check if this looks like actual custody data
+                record_text = ' '.join(str(v) for v in record.values() if v)
+                
+                # If the record seems to contain custody-related keywords, process it
+                if any(keyword.lower() in record_text.lower() for keyword in ['booking', 'inmate', 'custody', 'arrest', 'charge', 'bond', 'jail', 'detention']):
+                    # Prioritize important fields
+                    priority_fields = [
+                        'Name', 'Full Name', 'Inmate Name', 'Subject Name',
+                        'Booking Number', 'Booking ID', 'ID',
+                        'Status', 'Custody Status', 'Current Status',
+                        'Booking Date', 'Arrest Date', 'Date Booked',
+                        'Charges', 'Charge', 'Offense',
+                        'Bond', 'Bail', 'Bond Amount',
+                        'Location', 'Facility', 'Housing Location',
+                        'Release Date', 'Scheduled Release'
+                    ]
+                    
+                    # Speak priority fields first
+                    spoken_fields = set()
+                    for field_name in priority_fields:
+                        for key, value in record.items():
+                            if field_name.lower() in key.lower() and value and key not in spoken_fields:
+                                clean_value = self.clean_value_for_speech(value)
+                                if clean_value:
+                                    voice_message += f"{key}: {clean_value}. "
+                                    spoken_fields.add(key)
+                                break
+                    
+                    # Speak remaining fields
+                    for key, value in record.items():
+                        if key not in spoken_fields and value:
+                            clean_value = self.clean_value_for_speech(value)
+                            if clean_value:
+                                voice_message += f"{key}: {clean_value}. "
+                else:
+                    # If it doesn't look like custody data, it might be a "no results" table
+                    logger.info(f"Record doesn't contain custody keywords: {record_text}")
+                    if any(phrase in record_text.lower() for phrase in ['no records', 'no results', 'not found', 'no matches']):
+                        return "Sorry, no results found for the provided information."
+                    else:
+                        # Just read whatever data we have
+                        voice_message += f"Information found: {record_text}. "
+            
+            return voice_message if voice_message.strip().endswith('.') else voice_message.strip() + "."
+            
+        except Exception as e:
+            logger.error(f"Error formatting table data for voice: {e}")
+            return "I found some information but had trouble reading it clearly. Please try again later."
+    
+    def clean_value_for_speech(self, value: str) -> str:
+        """Clean and format values for better speech synthesis"""
+        if not value or value.strip() == '':
+            return None
+        
+        value = value.strip()
+        
+        # Remove excessive whitespace
+        value = re.sub(r'\s+', ' ', value)
+        
+        # Format dates for better speech
+        date_pattern = r'(\d{1,2})/(\d{1,2})/(\d{4})'
+        value = re.sub(date_pattern, r'\1 slash \2 slash \3', value)
+        
+        # Format times
+        time_pattern = r'(\d{1,2}):(\d{2})'
+        value = re.sub(time_pattern, r'\1 \2', value)
+        
+        # Handle currency
+        if value.startswith('$'):
+            value = value.replace('$', 'dollar ')
+        
+        return value
+    
     def submit_search(self) -> bool:
         """Submit the search form"""
         try:
@@ -239,7 +602,7 @@ class CustodyLookupWebDriver:
             return False
     
     def parse_search_results(self) -> Dict[str, Any]:
-        """Parse the search results page and extract custody information"""
+        """Parse the search results page and extract custody information (LEGACY METHOD)"""
         try:
             # Wait for results to load
             time.sleep(3)
@@ -299,7 +662,7 @@ class CustodyLookupWebDriver:
             }
     
     def perform_custody_lookup(self, first_name: str, last_name: str, date_of_birth: str, gender: str = "M") -> Dict[str, Any]:
-        """Perform complete custody lookup workflow"""
+        """Perform complete custody lookup workflow with Module 4 integration"""
         start_time = time.time()
         
         try:
@@ -309,7 +672,9 @@ class CustodyLookupWebDriver:
                     return {
                         'success': False,
                         'error_message': "Failed to initialize web driver",
-                        'duration': time.time() - start_time
+                        'duration': time.time() - start_time,
+                        'inmates_found': 0,
+                        'inmates': []
                     }
             
             # Navigate to custody page
@@ -317,7 +682,9 @@ class CustodyLookupWebDriver:
                 return {
                     'success': False,
                     'error_message': "Failed to navigate to custody lookup page",
-                    'duration': time.time() - start_time
+                    'duration': time.time() - start_time,
+                    'inmates_found': 0,
+                    'inmates': []
                 }
             
             # Fill the search form
@@ -325,19 +692,13 @@ class CustodyLookupWebDriver:
                 return {
                     'success': False,
                     'error_message': "Failed to fill search form",
-                    'duration': time.time() - start_time
+                    'duration': time.time() - start_time,
+                    'inmates_found': 0,
+                    'inmates': []
                 }
             
-            # Submit the search
-            if not self.submit_search():
-                return {
-                    'success': False,
-                    'error_message': "Failed to submit search form",
-                    'duration': time.time() - start_time
-                }
-            
-            # Parse results
-            results = self.parse_search_results()
+            # Submit and process results using Module 4
+            results = self.submit_search_and_process_results()
             results['duration'] = time.time() - start_time
             results['search_params'] = {
                 'first_name': first_name,
@@ -346,6 +707,9 @@ class CustodyLookupWebDriver:
                 'gender': gender
             }
             
+            # Important: Don't cleanup here - let the calling function handle it
+            # This prevents premature browser closure
+            
             return results
             
         except Exception as e:
@@ -353,7 +717,9 @@ class CustodyLookupWebDriver:
             return {
                 'success': False,
                 'error_message': f"Unexpected error during lookup: {str(e)}",
-                'duration': time.time() - start_time
+                'duration': time.time() - start_time,
+                'inmates_found': 0,
+                'inmates': []
             }
     
     def cleanup(self):
@@ -373,7 +739,8 @@ class CustodyLookupAgent:
         """Initialize the AI agent for custody lookup calls"""
         self.openai_client = openai.OpenAI(api_key=openai_api_key)
         self.twilio_client = Client(twilio_account_sid, twilio_auth_token)
-        self.call_sessions = {} 
+        self.call_sessions = {}
+        self.date_validation_attempts = {}  # Track date validation attempts per call
         
     def create_greeting_response(self) -> VoiceResponse:
         response = VoiceResponse()
@@ -419,6 +786,9 @@ class CustodyLookupAgent:
             'current_step': 'collecting_first_name'
         }
         
+        # Initialize date validation attempts counter
+        self.date_validation_attempts[call_sid] = 0
+        
         return self.collect_first_name()
     
     def collect_first_name(self) -> VoiceResponse:
@@ -427,8 +797,7 @@ class CustodyLookupAgent:
         
         instruction_text = (
             "Great! I'll need to collect some information to search the custody database. "
-            "First, please clearly state just the first name of the person you're looking up. "
-            "Speak slowly and clearly. For example, say 'John' or 'Michael'."
+            "First, please clearly state the first name of the person you're looking up."
         )
         
         gather = Gather(
@@ -472,8 +841,7 @@ class CustodyLookupAgent:
         response = VoiceResponse()
         
         instruction_text = (
-            "Now, please clearly state just the last name. "
-            "Speak slowly and clearly. For example, say 'Smith' or 'Johnson'."
+            "Now, please clearly state the last name."
         )
         
         gather = Gather(
@@ -509,18 +877,19 @@ class CustodyLookupAgent:
         if last_name != "Not provided" and len(last_name) > 1:
             response.say(f"I heard the last name as {last_name}.", voice='alice', language='en-US')
         
-        response.redirect('/collect_date')
+        # Skip date collection and go directly to confirmation
+        response.redirect('/final_confirmation')
         return response
     
-    def collect_date(self) -> VoiceResponse:
-        """Collect the date from the caller"""
+    # COMMENTED OUT - Date collection disabled for now
+    def collect_date_DISABLED(self) -> VoiceResponse:
+        """Collect the date from the caller with improved validation"""
         response = VoiceResponse()
         
         instruction_text = (
-            "Now, please provide the date of birth. "
-            "Say it clearly in month, day, year format. "
-            "For example, say 'January 15th, 1990' or 'March 3rd, 1985'. "
-            "Speak slowly and clearly."
+            "Now, please provide the date of birth in MM/DD/YYYY format. "
+            "For example, say 'ten twenty five nineteen eighty' for 10/25/1980. "
+            "Or you can say 'October 25th, 1980'. Speak slowly and clearly."
         )
         
         gather = Gather(
@@ -540,23 +909,116 @@ class CustodyLookupAgent:
         return response
     
     def handle_date(self, speech_result: str, call_sid: str) -> VoiceResponse:
-        """Process the date and move to confirmation"""
+        """Process the date with enhanced validation and retry logic"""
         response = VoiceResponse()
+        
+        # Initialize attempts counter if not exists
+        if call_sid not in self.date_validation_attempts:
+            self.date_validation_attempts[call_sid] = 0
         
         # Clean the date input
         date_input = self.clean_date_input(speech_result) if speech_result else "Not provided"
         
-        if call_sid in self.call_sessions:
-            self.call_sessions[call_sid]['date'] = date_input
-            self.call_sessions[call_sid]['current_step'] = 'confirming_information'
+        # Create a temporary web driver instance for date validation
+        temp_driver = CustodyLookupWebDriver(headless=True)
         
-        logger.info(f"Date captured: '{date_input}' for call {call_sid}")
+        # Try to parse and validate the date
+        parsed_date = temp_driver.parse_spoken_date(date_input) if date_input != "Not provided" else ""
+        formatted_date, is_valid = temp_driver.validate_and_format_date(parsed_date) if parsed_date else (None, False)
         
-        # Confirm the date if we got something useful
-        if date_input != "Not provided":
-            response.say(f"I heard the date as {date_input}.", voice='alice', language='en-US')
+        temp_driver.cleanup()
         
-        response.redirect('/final_confirmation')
+        if is_valid and formatted_date:
+            # Date is valid, confirm with user
+            confirmation_text = f"I heard the date as {formatted_date}. Is this correct? Please say yes or no."
+            
+            gather = Gather(
+                input='speech',
+                timeout=8,
+                speech_timeout=3,
+                action='/confirm_date',
+                method='POST'
+            )
+            gather.say(confirmation_text, voice='alice', language='en-US')
+            response.append(gather)
+            
+            # Store the formatted date temporarily
+            if call_sid in self.call_sessions:
+                self.call_sessions[call_sid]['temp_date'] = formatted_date
+            
+            # Default to proceeding if no response
+            response.redirect('/final_confirmation')
+            
+        else:
+            # Date is invalid, check attempts
+            self.date_validation_attempts[call_sid] += 1
+            
+            if self.date_validation_attempts[call_sid] < 3:
+                retry_text = (
+                    "I didn't understand the date format. Please speak the date clearly in MM/DD/YYYY format. "
+                    "For example, say 'ten twenty five nineteen eighty' for 10/25/1980."
+                )
+                
+                gather = Gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout=5,
+                    action='/handle_date',
+                    method='POST',
+                    enhanced=True
+                )
+                gather.say(retry_text, voice='alice', language='en-US')
+                response.append(gather)
+                
+                # If no response, proceed without date
+                response.redirect('/final_confirmation')
+            else:
+                # Max attempts reached
+                response.say("I'm having trouble understanding the date format. I'll proceed with the search using the name information only.", voice='alice', language='en-US')
+                
+                if call_sid in self.call_sessions:
+                    self.call_sessions[call_sid]['date'] = "Not provided"
+                
+                response.redirect('/final_confirmation')
+        
+        logger.info(f"Date processing - Call: {call_sid}, Input: '{date_input}', Valid: {is_valid}, Attempts: {self.date_validation_attempts.get(call_sid, 0)}")
+        
+        return response
+    
+    def confirm_date(self, speech_result: str, call_sid: str) -> VoiceResponse:
+        """Handle date confirmation from user"""
+        response = VoiceResponse()
+        
+        session = self.call_sessions.get(call_sid, {})
+        temp_date = session.get('temp_date', 'Not provided')
+        
+        # Check user's confirmation
+        if speech_result and any(word in speech_result.lower() for word in ['yes', 'correct', 'right', 'yeah', 'yep']):
+            # User confirmed the date
+            if call_sid in self.call_sessions:
+                self.call_sessions[call_sid]['date'] = temp_date
+                self.call_sessions[call_sid]['current_step'] = 'confirming_information'
+            
+            logger.info(f"Date confirmed: '{temp_date}' for call {call_sid}")
+            response.redirect('/final_confirmation')
+            
+        elif speech_result and any(word in speech_result.lower() for word in ['no', 'wrong', 'incorrect', 'nope']):
+            # User rejected the date, try again if attempts allow
+            self.date_validation_attempts[call_sid] += 1
+            
+            if self.date_validation_attempts[call_sid] < 3:
+                response.redirect('/collect_date')
+            else:
+                response.say("I'll proceed with the search using the name information only.", voice='alice', language='en-US')
+                if call_sid in self.call_sessions:
+                    self.call_sessions[call_sid]['date'] = "Not provided"
+                response.redirect('/final_confirmation')
+        else:
+            # Unclear response, assume yes
+            if call_sid in self.call_sessions:
+                self.call_sessions[call_sid]['date'] = temp_date
+            response.redirect('/final_confirmation')
+        
         return response
 
     def clean_name_input(self, name_input: str) -> str:
@@ -604,16 +1066,14 @@ class CustodyLookupAgent:
         
         session = self.call_sessions.get(call_sid, {})
         
-        # Get all the information we collected
+        # Get all the information we collected (no date collection now)
         first_name = session.get('first_name', 'Not provided')
         last_name = session.get('last_name', 'Not provided')
-        date = session.get('date', 'Not provided')
         
         confirmation_text = (
             f"Thank you. I have collected the following information: "
             f"First name: {first_name}. "
             f"Last name: {last_name}. "
-            f"Date: {date}. "
             "I'm now searching the Riverside County custody database. "
             "This may take a moment. Please stay on the line."
         )
@@ -629,6 +1089,10 @@ class CustodyLookupAgent:
         """Format custody lookup results for voice delivery"""
         if not lookup_result['success']:
             return f"I'm sorry, there was an error performing the custody lookup: {lookup_result.get('error_message', 'Unknown error')}"
+        
+        # Check if we have a pre-formatted voice message from Module 4
+        if 'voice_message' in lookup_result:
+            return lookup_result['voice_message']
         
         inmates_found = lookup_result.get('inmates_found', 0)
         
@@ -659,6 +1123,9 @@ class CustodyLookupAgent:
         if call_sid in self.call_sessions:
             del self.call_sessions[call_sid]
             logger.info(f"Cleaned up session for call {call_sid}")
+        
+        if call_sid in self.date_validation_attempts:
+            del self.date_validation_attempts[call_sid]
 
 # Flask application for handling Twilio webhooks
 app = Flask(__name__)
@@ -771,25 +1238,37 @@ def handle_last_name():
     response = agent.handle_last_name(speech_result, call_sid)
     return str(response)
 
-@app.route('/collect_date', methods=['POST'])
-def collect_date():
-    """Collect date"""
-    call_sid = request.form.get('CallSid')
-    logger.info(f"Collecting date for call: {call_sid}")
-    
-    response = agent.collect_date()
-    return str(response)
+# COMMENTED OUT - Date collection routes disabled
+# @app.route('/collect_date', methods=['POST'])
+# def collect_date():
+#     """Collect date"""
+#     call_sid = request.form.get('CallSid')
+#     logger.info(f"Collecting date for call: {call_sid}")
+#     
+#     response = agent.collect_date()
+#     return str(response)
 
-@app.route('/handle_date', methods=['POST'])
-def handle_date():
-    """Handle date input"""
-    speech_result = request.form.get('SpeechResult', '')
-    call_sid = request.form.get('CallSid')
-    
-    logger.info(f"Date - Call: {call_sid}, Speech: '{speech_result}'")
-    
-    response = agent.handle_date(speech_result, call_sid)
-    return str(response)
+# @app.route('/handle_date', methods=['POST'])
+# def handle_date():
+#     """Handle date input with validation"""
+#     speech_result = request.form.get('SpeechResult', '')
+#     call_sid = request.form.get('CallSid')
+#     
+#     logger.info(f"Date - Call: {call_sid}, Speech: '{speech_result}'")
+#     
+#     response = agent.handle_date(speech_result, call_sid)
+#     return str(response)
+
+# @app.route('/confirm_date', methods=['POST'])
+# def confirm_date():
+#     """Handle date confirmation"""
+#     speech_result = request.form.get('SpeechResult', '')
+#     call_sid = request.form.get('CallSid')
+#     
+#     logger.info(f"Date confirmation - Call: {call_sid}, Speech: '{speech_result}'")
+#     
+#     response = agent.confirm_date(speech_result, call_sid)
+#     return str(response)
 
 @app.route('/final_confirmation', methods=['POST'])
 def final_confirmation():
@@ -803,51 +1282,226 @@ def final_confirmation():
 
 @app.route('/process_custody_lookup', methods=['POST'])
 def process_custody_lookup():
-    """MODULE 3: Process custody lookup using collected information"""
+    """Start custody lookup with immediate response to avoid timeout"""
     call_sid = request.form.get('CallSid')
     session = agent.get_call_session(call_sid)
     
     response = VoiceResponse()
     
-    if not session:
-        response.say("Sorry, I couldn't find your session information. Please call back and try again.")
+    try:
+        logger.info(f"=== Starting process_custody_lookup for call {call_sid} ===")
+        
+        if not session:
+            logger.error(f"No session found for call {call_sid}")
+            response.say("Sorry, I couldn't find your session information. Please call back and try again.")
+            response.hangup()
+            return str(response)
+        
+        # Get the collected information (no date collection now)
+        first_name = session.get('first_name', 'Not provided')
+        last_name = session.get('last_name', 'Not provided') 
+        
+        logger.info(f"Session data: first_name='{first_name}', last_name='{last_name}'")
+        
+        # Validate we have at least a last name
+        if not last_name or last_name == "Not provided":
+            logger.error(f"No last name provided for call {call_sid}")
+            response.say("I need at least a last name to perform the search. Please call back with the required information.")
+            response.hangup()
+            return str(response)
+        
+        # Store search params in session for background processing
+        if call_sid in agent.call_sessions:
+            agent.call_sessions[call_sid]['search_params'] = {
+                'first_name': first_name,
+                'last_name': last_name,
+                'date_of_birth': 'Not provided'
+            }
+        
+        # Immediately respond to avoid timeout
+        logger.info("Returning immediate response to avoid timeout")
+        response.say("I'm searching the database now. Please hold while I look up the custody information. This will take a moment.", voice='alice', language='en-US')
+        
+        # Redirect to a polling endpoint that will check if search is complete
+        response.redirect('/check_search_status')
+        
+        # Start the background search in a separate thread
+        import threading
+        search_thread = threading.Thread(
+            target=perform_background_search,
+            args=(call_sid, first_name, last_name)
+        )
+        search_thread.daemon = True
+        search_thread.start()
+        
+        logger.info("Started background search thread")
+        
+    except Exception as e:
+        logger.error(f"ERROR in process_custody_lookup for call {call_sid}: {str(e)}", exc_info=True)
+        response.say("I'm sorry, there was a technical error. Please try calling back.", voice='alice', language='en-US')
         response.hangup()
-        return str(response)
+        agent.cleanup_session(call_sid)
     
-    # Get the collected information
-    first_name = session.get('first_name', 'Not provided')
-    last_name = session.get('last_name', 'Not provided') 
-    date_of_birth = session.get('date', 'Not provided')
-    
-    # Validate we have at least a last name
-    if not last_name or last_name == "Not provided":
-        response.say("I need at least a last name to perform the search. Let me try to search with the information I have.")
+    logger.info(f"Returning immediate TwiML response: {str(response)}")
+    return str(response)
+
+def perform_background_search(call_sid: str, first_name: str, last_name: str):
+    """Perform the actual custody lookup in background"""
+    web_driver = None
     
     try:
-        # Perform the custody lookup using Module 3
-        logger.info(f"Starting custody lookup for call {call_sid}: {first_name} {last_name}, DOB: {date_of_birth}")
+        logger.info(f"=== Background search started for call {call_sid}: {first_name} {last_name} ===")
         
-        # Initialize the web driver (VISIBLE mode for debugging)
-        web_driver = CustodyLookupWebDriver(headless=False)
+        # Initialize the web driver
+        web_driver = CustodyLookupWebDriver(headless=True)  # Use headless for background
         
         # Perform the lookup
         lookup_result = web_driver.perform_custody_lookup(
             first_name=first_name,
             last_name=last_name,
-            date_of_birth=date_of_birth,
-            gender="M"  # Default to male
+            date_of_birth='Not provided',
+            gender="M"
         )
         
-        # Clean up the web driver
-        web_driver.cleanup()
+        logger.info(f"Background search completed: {lookup_result}")
         
-        # Format results for voice delivery
-        voice_message = agent.format_custody_results_for_voice(lookup_result)
+        # Store results in session
+        if call_sid in agent.call_sessions:
+            agent.call_sessions[call_sid]['search_completed'] = True
+            agent.call_sessions[call_sid]['search_results'] = lookup_result
+            
+            # Generate voice message
+            if lookup_result.get('success') and lookup_result.get('inmates_found', 0) > 0:
+                voice_message = agent.format_custody_results_for_voice(lookup_result)
+            else:
+                if 'voice_message' in lookup_result:
+                    voice_message = lookup_result['voice_message']
+                else:
+                    voice_message = "Sorry, no results found for the provided information."
+            
+            agent.call_sessions[call_sid]['voice_message'] = voice_message
+            logger.info(f"Stored results in session for call {call_sid}")
         
-        # Deliver the results via voice
-        response.say(voice_message, voice='alice', language='en-US')
+    except Exception as e:
+        logger.error(f"Error in background search for call {call_sid}: {e}", exc_info=True)
         
-        # Ask if they need anything else
+        # Store error in session
+        if call_sid in agent.call_sessions:
+            agent.call_sessions[call_sid]['search_completed'] = True
+            agent.call_sessions[call_sid]['search_error'] = True
+            agent.call_sessions[call_sid]['voice_message'] = "Sorry, there was an error performing the search. Please try again."
+    
+    finally:
+        if web_driver:
+            web_driver.cleanup()
+            logger.info("Background search: WebDriver cleaned up")
+
+@app.route('/check_search_status', methods=['POST'])
+def check_search_status():
+    """Check if background search is complete and deliver results"""
+    call_sid = request.form.get('CallSid')
+    session = agent.get_call_session(call_sid)
+    
+    response = VoiceResponse()
+    
+    try:
+        logger.info(f"=== Checking search status for call {call_sid} ===")
+        
+        if not session:
+            response.say("Sorry, I lost track of your search. Please call back.")
+            response.hangup()
+            return str(response)
+        
+        # Check if search is completed
+        if session.get('search_completed', False):
+            logger.info("Search completed, delivering results")
+            
+            # Get the voice message
+            voice_message = session.get('voice_message', 'Sorry, no results found.')
+            
+            # Deliver results
+            response.say(voice_message, voice='alice', language='en-US')
+            
+            # Ask for another search
+            gather = Gather(
+                input='speech dtmf',
+                timeout=8,
+                speech_timeout=3,
+                action='/handle_additional_help',
+                method='POST',
+                num_digits=1
+            )
+            gather.say("Would you like another search? Say yes or press 1 for yes, or say no or press 2 to end the call.", voice='alice', language='en-US')
+            response.append(gather)
+            
+            # Default to ending call
+            response.say("Thank you for using our service. Goodbye.", voice='alice', language='en-US')
+            response.hangup()
+            
+        else:
+            logger.info("Search still in progress, asking user to wait")
+            # Search still in progress
+            response.say("I'm still searching the database. Please hold on a moment longer.", voice='alice', language='en-US')
+            response.pause(length=3)
+            response.redirect('/check_search_status')
+        
+    except Exception as e:
+        logger.error(f"Error checking search status: {e}", exc_info=True)
+        response.say("Sorry, there was an error. Please try calling back.", voice='alice', language='en-US')
+        response.hangup()
+        agent.cleanup_session(call_sid)
+    
+    logger.info(f"Returning search status response: {str(response)}")
+    return str(response)
+
+@app.route('/handle_repeat_request', methods=['POST'])
+def handle_repeat_request():
+    """Handle user request to repeat information"""
+    call_sid = request.form.get('CallSid')
+    speech_result = request.form.get('SpeechResult', '')
+    digits = request.form.get('Digits', '')
+    
+    logger.info(f"=== handle_repeat_request for call {call_sid} ===")
+    logger.info(f"Speech: '{speech_result}', Digits: '{digits}'")
+    
+    response = VoiceResponse()
+    
+    try:
+        session = agent.get_call_session(call_sid)
+        
+        # Check if user wants to repeat
+        if digits == '1' or (speech_result and any(word in speech_result.lower() for word in ['yes', 'yeah', 'repeat'])):
+            logger.info("User requested repeat")
+            if session and 'last_voice_message' in session:
+                logger.info("Playing stored voice message")
+                response.say(session['last_voice_message'], voice='alice', language='en-US')
+            else:
+                logger.warning("No stored voice message found")
+                response.say("I'm sorry, I don't have the information to repeat. Let me help you with something else.", voice='alice', language='en-US')
+        else:
+            logger.info("User did not request repeat")
+        
+        # Continue to additional help
+        response.redirect('/ask_additional_help')
+        
+    except Exception as e:
+        logger.error(f"Error in handle_repeat_request: {e}", exc_info=True)
+        response.say("I'm sorry, there was an error. Let me help you with something else.", voice='alice', language='en-US')
+        response.redirect('/ask_additional_help')
+    
+    logger.info(f"Returning repeat response: {str(response)}")
+    return str(response)
+
+@app.route('/ask_additional_help', methods=['POST'])
+def ask_additional_help():
+    """Ask if user needs additional help"""
+    call_sid = request.form.get('CallSid')
+    
+    logger.info(f"=== ask_additional_help for call {call_sid} ===")
+    
+    response = VoiceResponse()
+    
+    try:
         gather = Gather(
             input='speech dtmf',
             timeout=8,
@@ -863,46 +1517,64 @@ def process_custody_lookup():
         response.say("Thank you for using our custody lookup service. Goodbye.", voice='alice', language='en-US')
         response.hangup()
         
-        # Log the complete result for debugging
-        logger.info(f"Custody lookup completed for call {call_sid}. Success: {lookup_result['success']}, Found: {lookup_result.get('inmates_found', 0)} records")
+        # Clean up session
+        agent.cleanup_session(call_sid)
         
     except Exception as e:
-        logger.error(f"Error during custody lookup for call {call_sid}: {e}")
-        response.say("I'm sorry, there was a technical error performing the custody search. The system may be temporarily unavailable. Please try calling back in a few minutes.", voice='alice', language='en-US')
+        logger.error(f"Error in ask_additional_help: {e}", exc_info=True)
+        response.say("Thank you for calling. Goodbye.", voice='alice', language='en-US')
         response.hangup()
-    
-    finally:
-        # Clean up session after lookup is complete
         agent.cleanup_session(call_sid)
     
+    logger.info(f"Returning additional help response: {str(response)}")
     return str(response)
 
 @app.route('/handle_additional_help', methods=['POST'])
 def handle_additional_help():
-    """Handle user response for additional help"""
+    """Handle user response for additional help - simplified version"""
+    call_sid = request.form.get('CallSid')
     speech_result = request.form.get('SpeechResult', '')
     digits = request.form.get('Digits', '')
-    call_sid = request.form.get('CallSid')
+    
+    logger.info(f"=== handle_additional_help for call {call_sid} ===")
+    logger.info(f"Speech: '{speech_result}', Digits: '{digits}'")
     
     response = VoiceResponse()
     
-    # Check if user wants another search
-    if digits == '1' or (speech_result and any(word in speech_result.lower() for word in ['yes', 'yeah', 'another', 'more', 'again'])):
-        response.say("I'll help you with another custody search. Let me collect the information again.", voice='alice', language='en-US')
-        
-        # Reset session for new search
-        if call_sid in agent.call_sessions:
-            session = agent.call_sessions[call_sid]
-            session['first_name'] = None
-            session['last_name'] = None
-            session['date'] = None
-            session['current_step'] = 'collecting_first_name'
-        
-        response.redirect('/collect_first_name')
-    else:
-        response.say("Thank you for using our custody lookup service. Have a great day!", voice='alice', language='en-US')
+    try:
+        # Check if user wants another search
+        if digits == '1' or (speech_result and any(word in speech_result.lower() for word in ['yes', 'yeah', 'another', 'more', 'again'])):
+            logger.info("User requested another search")
+            response.say("Starting a new search.", voice='alice', language='en-US')
+            
+            # Reset session for new search
+            if call_sid in agent.call_sessions:
+                session = agent.call_sessions[call_sid]
+                session['first_name'] = None
+                session['last_name'] = None
+                session['current_step'] = 'collecting_first_name'
+                # Clear any stored voice message
+                if 'last_voice_message' in session:
+                    del session['last_voice_message']
+                logger.info("Reset session for new search")
+            
+            response.redirect('/collect_first_name')
+        else:
+            logger.info("User wants to end call")
+            response.say("Thank you for calling. Goodbye.", voice='alice', language='en-US')
+            response.hangup()
+    
+    except Exception as e:
+        logger.error(f"Error in handle_additional_help: {e}", exc_info=True)
+        response.say("Goodbye.", voice='alice', language='en-US')
         response.hangup()
     
+    finally:
+        # Always clean up session when we're done
+        if not any(word in speech_result.lower() for word in ['yes', 'yeah', 'another', 'more', 'again']) and digits != '1':
+            agent.cleanup_session(call_sid)
+    
+    logger.info(f"Returning additional help response: {str(response)}")
     return str(response)
 
 # Test endpoint for custody lookup functionality (for development/debugging)
@@ -1008,5 +1680,5 @@ if __name__ == '__main__':
     host = os.getenv('FLASK_HOST', '0.0.0.0')
     debug = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
     
-    logger.info(f"Starting Flask app with Module 3 integrated on {host}:{port}")
+    logger.info(f"Starting Flask app with Module 3 & 4 integrated on {host}:{port}")
     app.run(debug=debug, host=host, port=port)
