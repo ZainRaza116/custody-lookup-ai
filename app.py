@@ -121,9 +121,32 @@ class CustodyLookupWebDriver:
     
     def parse_spoken_date(self, spoken_date: str) -> str:
         """
-        Convert spoken date to numerical format
+        Convert spoken date to MM/DD/YYYY format
+        Enhanced to handle formats like "October 16 1988"
         """
-        # Convert spoken numbers to digits
+        if not spoken_date:
+            return ""
+        
+        spoken_date = spoken_date.lower().strip()
+        logger.info(f"Parsing spoken date: '{spoken_date}'")
+        
+        # Month name mappings
+        months = {
+            'january': '01', 'jan': '01',
+            'february': '02', 'feb': '02',
+            'march': '03', 'mar': '03',
+            'april': '04', 'apr': '04',
+            'may': '05',
+            'june': '06', 'jun': '06',
+            'july': '07', 'jul': '07',
+            'august': '08', 'aug': '08',
+            'september': '09', 'sep': '09', 'sept': '09',
+            'october': '10', 'oct': '10',
+            'november': '11', 'nov': '11',
+            'december': '12', 'dec': '12'
+        }
+        
+        # Convert number words to digits
         number_words = {
             'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
             'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
@@ -132,20 +155,86 @@ class CustodyLookupWebDriver:
             'eighteen': '18', 'nineteen': '19', 'twenty': '20', 'thirty': '30'
         }
         
-        spoken_date = spoken_date.lower()
-        
-        # Replace slash words
-        spoken_date = spoken_date.replace('slash', '/').replace('dash', '-')
+        # Clean up the input
+        spoken_date = spoken_date.replace(',', ' ').replace('.', ' ')
+        spoken_date = re.sub(r'\s+', ' ', spoken_date).strip()
         
         # Replace number words with digits
         for word, digit in number_words.items():
-            spoken_date = spoken_date.replace(word, digit)
+            spoken_date = re.sub(r'\b' + word + r'\b', digit, spoken_date)
         
-        # Handle twenty-something numbers
+        # Handle twenty-something and thirty-something numbers
         spoken_date = re.sub(r'twenty[\s-]?(\w+)', lambda m: '2' + number_words.get(m.group(1), m.group(1)), spoken_date)
         spoken_date = re.sub(r'thirty[\s-]?(\w+)', lambda m: '3' + number_words.get(m.group(1), m.group(1)), spoken_date)
         
-        return spoken_date
+        # Look for month names and extract components
+        found_month = None
+        for month_name, month_num in months.items():
+            if month_name in spoken_date:
+                found_month = month_num
+                # Remove the month name to make number extraction easier
+                spoken_date = spoken_date.replace(month_name, ' ')
+                break
+        
+        # Extract all numbers from the remaining text
+        numbers = re.findall(r'\d+', spoken_date)
+        
+        logger.info(f"Found month: {found_month}, Numbers: {numbers}")
+        
+        # Pattern 1: Month name with day and year (e.g., "October 16 1988")
+        if found_month and len(numbers) >= 2:
+            try:
+                day = int(numbers[0])
+                year = int(numbers[1])
+                
+                # Handle 2-digit years
+                if year < 100:
+                    year = year + 1900 if year > 50 else year + 2000
+                
+                # Validate ranges
+                if 1 <= day <= 31 and 1900 <= year <= 2025:
+                    result = f"{found_month}/{day:02d}/{year}"
+                    logger.info(f"✅ Parsed as: {result}")
+                    return result
+            except ValueError:
+                pass
+        
+        # Pattern 2: MM/DD/YYYY or similar with slashes/dashes
+        if len(numbers) >= 3:
+            try:
+                month, day, year = int(numbers[0]), int(numbers[1]), int(numbers[2])
+                
+                # Handle 2-digit years
+                if year < 100:
+                    year = year + 1900 if year > 50 else year + 2000
+                
+                # Validate ranges
+                if 1 <= month <= 12 and 1 <= day <= 31 and 1900 <= year <= 2025:
+                    result = f"{month:02d}/{day:02d}/{year}"
+                    logger.info(f"✅ Parsed as: {result}")
+                    return result
+            except ValueError:
+                pass
+        
+        # Pattern 3: Just numbers without month name
+        if not found_month and len(numbers) >= 3:
+            try:
+                # Assume MM DD YYYY format
+                month, day, year = int(numbers[0]), int(numbers[1]), int(numbers[2])
+                
+                # Handle 2-digit years
+                if year < 100:
+                    year = year + 1900 if year > 50 else year + 2000
+                
+                if 1 <= month <= 12 and 1 <= day <= 31 and 1900 <= year <= 2025:
+                    result = f"{month:02d}/{day:02d}/{year}"
+                    logger.info(f"✅ Parsed as: {result}")
+                    return result
+            except ValueError:
+                pass
+        
+        logger.warning(f"❌ Could not parse date: '{spoken_date}'")
+        return ""
     
     def parse_date_of_birth(self, date_str: str) -> Optional[str]:
         """Parse various date formats into MM/DD/YYYY format required by the form"""
@@ -877,12 +966,153 @@ class CustodyLookupAgent:
         if last_name != "Not provided" and len(last_name) > 1:
             response.say(f"I heard the last name as {last_name}.", voice='alice', language='en-US')
         
-        # Skip date collection and go directly to confirmation
-        response.redirect('/final_confirmation')
+        # Re-enable date collection
+        response.redirect('/collect_date')
         return response
     
-    # COMMENTED OUT - Date collection disabled for now
-    def collect_date_DISABLED(self) -> VoiceResponse:
+    def collect_date(self) -> VoiceResponse:
+        """Collect the date from the caller with improved validation"""
+        response = VoiceResponse()
+        
+        instruction_text = (
+            "Now, please provide the date of birth. "
+            "You can say it like 'October 16, 1988' or 'ten twenty five nineteen eighty'. "
+            "Speak slowly and clearly."
+        )
+        
+        gather = Gather(
+            input='speech',
+            timeout=10,
+            speech_timeout=5,
+            action='/handle_date',
+            method='POST',
+            enhanced=True
+        )
+        gather.say(instruction_text, voice='alice', language='en-US')
+        response.append(gather)
+        
+        # If no response, just move to confirmation
+        response.redirect('/final_confirmation')
+        
+        return response
+    
+    def handle_date(self, speech_result: str, call_sid: str) -> VoiceResponse:
+        """Process the date with enhanced validation and retry logic"""
+        response = VoiceResponse()
+        
+        # Initialize attempts counter if not exists
+        if call_sid not in self.date_validation_attempts:
+            self.date_validation_attempts[call_sid] = 0
+        
+        # Clean the date input
+        date_input = self.clean_date_input(speech_result) if speech_result else "Not provided"
+        logger.info(f"Date input received: '{date_input}' for call {call_sid}")
+        
+        # Create a temporary web driver instance for date validation
+        temp_driver = CustodyLookupWebDriver(headless=True)
+        
+        # Try to parse and validate the date
+        parsed_date = temp_driver.parse_spoken_date(date_input) if date_input != "Not provided" else ""
+        formatted_date, is_valid = temp_driver.validate_and_format_date(parsed_date) if parsed_date else (None, False)
+        
+        temp_driver.cleanup()
+        
+        logger.info(f"Parsed date: '{parsed_date}', Formatted: '{formatted_date}', Valid: {is_valid}")
+        
+        if is_valid and formatted_date:
+            # Date is valid, confirm with user
+            confirmation_text = f"I heard the date as {formatted_date}. Is this correct? Please say yes or no."
+            
+            gather = Gather(
+                input='speech',
+                timeout=8,
+                speech_timeout=3,
+                action='/confirm_date',
+                method='POST'
+            )
+            gather.say(confirmation_text, voice='alice', language='en-US')
+            response.append(gather)
+            
+            # Store the formatted date temporarily
+            if call_sid in self.call_sessions:
+                self.call_sessions[call_sid]['temp_date'] = formatted_date
+            
+            # Default to proceeding if no response
+            response.redirect('/final_confirmation')
+            
+        else:
+            # Date is invalid, check attempts
+            self.date_validation_attempts[call_sid] += 1
+            
+            if self.date_validation_attempts[call_sid] < 3:
+                retry_text = (
+                    "I didn't understand the date format. Please speak the date clearly. "
+                    "For example, say 'October 16, 1988' or 'ten twenty five nineteen eighty'."
+                )
+                
+                gather = Gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout=5,
+                    action='/handle_date',
+                    method='POST',
+                    enhanced=True
+                )
+                gather.say(retry_text, voice='alice', language='en-US')
+                response.append(gather)
+                
+                # If no response, proceed without date
+                response.redirect('/final_confirmation')
+            else:
+                # Max attempts reached
+                response.say("I'm having trouble understanding the date format. I'll proceed with the search using the name information only.", voice='alice', language='en-US')
+                
+                if call_sid in self.call_sessions:
+                    self.call_sessions[call_sid]['date'] = "Not provided"
+                
+                response.redirect('/final_confirmation')
+        
+        logger.info(f"Date processing - Call: {call_sid}, Input: '{date_input}', Valid: {is_valid}, Attempts: {self.date_validation_attempts.get(call_sid, 0)}")
+        
+        return response
+    
+    def confirm_date(self, speech_result: str, call_sid: str) -> VoiceResponse:
+        """Handle date confirmation from user"""
+        response = VoiceResponse()
+        
+        session = self.call_sessions.get(call_sid, {})
+        temp_date = session.get('temp_date', 'Not provided')
+        
+        # Check user's confirmation
+        if speech_result and any(word in speech_result.lower() for word in ['yes', 'correct', 'right', 'yeah', 'yep']):
+            # User confirmed the date
+            if call_sid in self.call_sessions:
+                self.call_sessions[call_sid]['date'] = temp_date
+                self.call_sessions[call_sid]['current_step'] = 'confirming_information'
+            
+            logger.info(f"Date confirmed: '{temp_date}' for call {call_sid}")
+            response.redirect('/final_confirmation')
+            
+        elif speech_result and any(word in speech_result.lower() for word in ['no', 'wrong', 'incorrect', 'nope']):
+            # User rejected the date, try again if attempts allow
+            self.date_validation_attempts[call_sid] += 1
+            
+            if self.date_validation_attempts[call_sid] < 3:
+                response.redirect('/collect_date')
+            else:
+                response.say("I'll proceed with the search using the name information only.", voice='alice', language='en-US')
+                if call_sid in self.call_sessions:
+                    self.call_sessions[call_sid]['date'] = "Not provided"
+                response.redirect('/final_confirmation')
+        else:
+            # Unclear response, assume yes
+            if call_sid in self.call_sessions:
+                self.call_sessions[call_sid]['date'] = temp_date
+            response.redirect('/final_confirmation')
+        
+        return response
+
+    # RE-ENABLED - Date collection methods
         """Collect the date from the caller with improved validation"""
         response = VoiceResponse()
         
@@ -1066,17 +1296,28 @@ class CustodyLookupAgent:
         
         session = self.call_sessions.get(call_sid, {})
         
-        # Get all the information we collected (no date collection now)
+        # Get all the information we collected (including date now)
         first_name = session.get('first_name', 'Not provided')
         last_name = session.get('last_name', 'Not provided')
+        date = session.get('date', 'Not provided')
         
-        confirmation_text = (
-            f"Thank you. I have collected the following information: "
-            f"First name: {first_name}. "
-            f"Last name: {last_name}. "
-            "I'm now searching the Riverside County custody database. "
-            "This may take a moment. Please stay on the line."
-        )
+        if date != 'Not provided':
+            confirmation_text = (
+                f"Thank you. I have collected the following information: "
+                f"First name: {first_name}. "
+                f"Last name: {last_name}. "
+                f"Date of birth: {date}. "
+                "I'm now searching the Riverside County custody database. "
+                "This may take a moment. Please stay on the line."
+            )
+        else:
+            confirmation_text = (
+                f"Thank you. I have collected the following information: "
+                f"First name: {first_name}. "
+                f"Last name: {last_name}. "
+                "I'm now searching the Riverside County custody database. "
+                "This may take a moment. Please stay on the line."
+            )
         
         response.say(confirmation_text, voice='alice', language='en-US')
         
@@ -1238,37 +1479,37 @@ def handle_last_name():
     response = agent.handle_last_name(speech_result, call_sid)
     return str(response)
 
-# COMMENTED OUT - Date collection routes disabled
-# @app.route('/collect_date', methods=['POST'])
-# def collect_date():
-#     """Collect date"""
-#     call_sid = request.form.get('CallSid')
-#     logger.info(f"Collecting date for call: {call_sid}")
-#     
-#     response = agent.collect_date()
-#     return str(response)
+# RE-ENABLED - Date collection routes
+@app.route('/collect_date', methods=['POST'])
+def collect_date():
+    """Collect date"""
+    call_sid = request.form.get('CallSid')
+    logger.info(f"Collecting date for call: {call_sid}")
+    
+    response = agent.collect_date()
+    return str(response)
 
-# @app.route('/handle_date', methods=['POST'])
-# def handle_date():
-#     """Handle date input with validation"""
-#     speech_result = request.form.get('SpeechResult', '')
-#     call_sid = request.form.get('CallSid')
-#     
-#     logger.info(f"Date - Call: {call_sid}, Speech: '{speech_result}'")
-#     
-#     response = agent.handle_date(speech_result, call_sid)
-#     return str(response)
+@app.route('/handle_date', methods=['POST'])
+def handle_date():
+    """Handle date input with validation"""
+    speech_result = request.form.get('SpeechResult', '')
+    call_sid = request.form.get('CallSid')
+    
+    logger.info(f"Date - Call: {call_sid}, Speech: '{speech_result}'")
+    
+    response = agent.handle_date(speech_result, call_sid)
+    return str(response)
 
-# @app.route('/confirm_date', methods=['POST'])
-# def confirm_date():
-#     """Handle date confirmation"""
-#     speech_result = request.form.get('SpeechResult', '')
-#     call_sid = request.form.get('CallSid')
-#     
-#     logger.info(f"Date confirmation - Call: {call_sid}, Speech: '{speech_result}'")
-#     
-#     response = agent.confirm_date(speech_result, call_sid)
-#     return str(response)
+@app.route('/confirm_date', methods=['POST'])
+def confirm_date():
+    """Handle date confirmation"""
+    speech_result = request.form.get('SpeechResult', '')
+    call_sid = request.form.get('CallSid')
+    
+    logger.info(f"Date confirmation - Call: {call_sid}, Speech: '{speech_result}'")
+    
+    response = agent.confirm_date(speech_result, call_sid)
+    return str(response)
 
 @app.route('/final_confirmation', methods=['POST'])
 def final_confirmation():
@@ -1315,8 +1556,10 @@ def process_custody_lookup():
             agent.call_sessions[call_sid]['search_params'] = {
                 'first_name': first_name,
                 'last_name': last_name,
-                'date_of_birth': 'Not provided'
+                'date_of_birth': date_of_birth
             }
+        
+        logger.info(f"Search params: {first_name} {last_name}, DOB: {date_of_birth}")
         
         # Immediately respond to avoid timeout
         logger.info("Returning immediate response to avoid timeout")
@@ -1329,7 +1572,7 @@ def process_custody_lookup():
         import threading
         search_thread = threading.Thread(
             target=perform_background_search,
-            args=(call_sid, first_name, last_name)
+            args=(call_sid, first_name, last_name, date_of_birth)
         )
         search_thread.daemon = True
         search_thread.start()
@@ -1345,12 +1588,12 @@ def process_custody_lookup():
     logger.info(f"Returning immediate TwiML response: {str(response)}")
     return str(response)
 
-def perform_background_search(call_sid: str, first_name: str, last_name: str):
+def perform_background_search(call_sid: str, first_name: str, last_name: str, date_of_birth: str = 'Not provided'):
     """Perform the actual custody lookup in background"""
     web_driver = None
     
     try:
-        logger.info(f"=== Background search started for call {call_sid}: {first_name} {last_name} ===")
+        logger.info(f"=== Background search started for call {call_sid}: {first_name} {last_name}, DOB: {date_of_birth} ===")
         
         # Initialize the web driver
         web_driver = CustodyLookupWebDriver(headless=True)  # Use headless for background
@@ -1359,7 +1602,7 @@ def perform_background_search(call_sid: str, first_name: str, last_name: str):
         lookup_result = web_driver.perform_custody_lookup(
             first_name=first_name,
             last_name=last_name,
-            date_of_birth='Not provided',
+            date_of_birth=date_of_birth,
             gender="M"
         )
         
