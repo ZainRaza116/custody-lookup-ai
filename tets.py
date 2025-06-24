@@ -9,8 +9,8 @@ def make_test_call():
     """Make a test call to verify the custody lookup system"""
     
     # Get credentials from environment variables
-    account_sid = 'ACfca506577596fcae1c5a38e9475b12c2'
-    auth_token = 'deb37f2812a0782bb26ff183ceb74c20'
+    account_sid = 'xx'
+    auth_token = 'xx'
     
     if not account_sid or not auth_token:
         print("❌ Error: Twilio credentials not found in environment variables")
@@ -24,9 +24,9 @@ def make_test_call():
         print("📞 Initiating test call...")
         
         call = client.calls.create(
-            to='+923048685416',  # Your Pakistani number
-            from_='+12293606141',  # Your Twilio US number
-            url='https://efad-182-181-248-252.ngrok-free.app/incoming_call',  # Your webhook URL
+            to='+923227641190',  # Your Pakistani number
+            from_='+18328611252',  # Your Twilio US number
+            url='https://ea62-182-181-184-237.ngrok-free.app/incoming_call',  # Your webhook URL
             method='POST'
         )
         

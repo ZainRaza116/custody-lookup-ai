@@ -1538,11 +1538,12 @@ def process_custody_lookup():
             response.hangup()
             return str(response)
         
-        # Get the collected information (no date collection now)
+        # Get the collected information (INCLUDING date)
         first_name = session.get('first_name', 'Not provided')
-        last_name = session.get('last_name', 'Not provided') 
+        last_name = session.get('last_name', 'Not provided')
+        date_of_birth = session.get('date', 'Not provided')  # FIX: Get 'date' from session
         
-        logger.info(f"Session data: first_name='{first_name}', last_name='{last_name}'")
+        logger.info(f"Session data: first_name='{first_name}', last_name='{last_name}', date='{date_of_birth}'")
         
         # Validate we have at least a last name
         if not last_name or last_name == "Not provided":
@@ -1919,9 +1920,27 @@ def health_detailed():
         }), 500
 
 if __name__ == '__main__':
-    port = int(os.getenv('FLASK_PORT', 5000))
+    import sys
+    
+    # Check if port is provided as command line argument
+    if len(sys.argv) > 1:
+        try:
+            port = int(sys.argv[1])
+        except ValueError:
+            print(f"Invalid port number: {sys.argv[1]}")
+            port = int(os.getenv('FLASK_PORT', 5000))
+    else:
+        port = int(os.getenv('FLASK_PORT', 5000))
+    
     host = os.getenv('FLASK_HOST', '0.0.0.0')
     debug = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
     
-    logger.info(f"Starting Flask app with Module 3 & 4 integrated on {host}:{port}")
-    app.run(debug=debug, host=host, port=port)
+    print(f"Starting Flask app on {host}:{port}")
+    print(f"Debug mode: {debug}")
+    print(f"Ngrok URL should be: http://your-ngrok-url.ngrok.io")
+    
+    try:
+        app.run(debug=debug, host=host, port=port)
+    except Exception as e:
+        print(f"Failed to start Flask app: {e}")
+        sys.exit(1)
